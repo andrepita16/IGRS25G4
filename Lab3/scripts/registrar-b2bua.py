@@ -21,7 +21,7 @@ class kamailio:
         # Working as a Registrar server
         if  (msg.Method == "REGISTER"):
             domain = KSR.pv.get("$td")
-            if domain == "acme.operator":
+            if domain == "@acme.operator":
                 
                 KSR.info("REGISTER R-URI: " + KSR.pv.get("$ru") + "\n")      # Obtaining values via Pseudo-variables (pv)
                 KSR.info("            To: " + KSR.pv.get("$tu") +
