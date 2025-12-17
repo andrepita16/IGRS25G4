@@ -1,6 +1,43 @@
 import sys
 import KSR as KSR # type: ignore
 
+import sqlite3
+import os
+
+# Caminho para a BD (garante que a pasta tem permissoes de escrita)
+DB_PATH = "/tmp/redial_service.db"
+
+def db_init():
+    with sqlite3.connect(DB_PATH) as conn:
+        # Cria a tabela se nao existir
+        conn.execute('''CREATE TABLE IF NOT EXISTS user_redial 
+                        (user TEXT PRIMARY KEY, targets TEXT)''')
+        conn.commit()
+
+def db_save_list(user, targets_list):
+    # Guarda a lista como uma string separada por virgulas
+    targets_str = ",".join(targets_list)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("REPLACE INTO user_redial (user, targets) VALUES (?, ?)", 
+                     (user, targets_str))
+        conn.commit()
+
+def db_get_list(user):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute("SELECT targets FROM user_redial WHERE user=?", (user,))
+        row = cursor.fetchone()
+        if row and row[0]:
+            return row[0].split(",") # Devolve lista ["sip:a", "sip:b"]
+    return []
+
+def db_clear_list(user):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM user_redial WHERE user=?", (user,))
+        conn.commit()
+
+# Inicializa a BD no arranque
+db_init()
+MAX_REDIALS = 5
 # Mandatory function - module initiation
 def mod_init():
     KSR.info("===== from Python mod init\n")
@@ -18,93 +55,136 @@ class kamailio:
 
     # Function called for REQUEST messages received 
     def ksr_request_route(self, msg):
-        # Working as a Registrar server
-        # REGISTER / DEREGISTER
+        
+        #  TRATAMENTO DO REGISTER / DEREGISTER ("Redial 2.0")
         if msg.Method == "REGISTER":
-            domain = KSR.pv.get("$td")      # domínio do To
-            aor = KSR.pv.get("$tu")         # AoR completo
-            expires = KSR.pv.get("$expires")  # expires normalizado
-
-            # Segurança: só aceitamos domínio ACME
-            if domain != "acme.operator":
-                KSR.info(f"dominio invalido {domain}\n")
-                KSR.sl.send_reply(403, "Forbidden - dominio invalido")
+            # 1. Verificar Domínio (Requisito: Apenas acme.operador)
+            # 
+            domain = KSR.pv.get("$td") # Domínio do To
+            if domain != "acme.operador":
+                KSR.info(f"REGISTO RECUSADO: Dominio invalido {domain}\n")
+                KSR.sl.send_reply(403, "Forbidden - Apenas acme.operador permitido")
                 return 1
 
-            # DEREGISTER (Expires = 0)
-            if expires == 0:
-                # verifica se existe registo
-                if KSR.registrar.lookup("location") < 0:
-                    KSR.info(f"DEREGISTER FAILED (not registered): {aor}\n")
-                    KSR.sl.send_reply(404, "Not Found")
-                    return 1
-
-                # se existe remove registo
-                KSR.info(f"DEREGISTER OK: {aor}\n")
-                KSR.registrar.save("location", 0)
-
+            # 2. Verificar se é De-registo (Expires == 0)
+            is_deregister = False
+            exp_hdr = KSR.hdr.get("Expires")
+            if exp_hdr is not None and int(exp_hdr) == 0:
+                is_deregister = True                                       
+            rc = KSR.registrar.save('location', 0)
+            
+            if rc < 0:
+                KSR.info("Erro ao salvar registo\n")
+                KSR.sl.send_reply(500, "Server Error")
                 return 1
+            
+            user_aor = KSR.pv.get("$tu")
 
-            # REGISTER normal
-            KSR.info(f"REGISTER OK: {aor}\n")
-            KSR.registrar.save("location", 0)
+            if is_deregister:
+                # [cite: 309, 316] "O de-registo... implica a eliminação da sua lista"
+                KSR.info(f"DEREGISTER detetado para {user_aor}. A limpar lista de redial...\n")
+                # TODO: Chamar função para limpar BD: db_clear_redial_list(user_aor)               
+            else:
+                KSR.info(f"REGISTER detetado para {user_aor}. A inicializar lista de redial...\n")
+                # TODO: Chamar função para init BD: db_init_redial_list(user_aor)
 
             return 1
+               
+        # ... (dentro de ksr_request_route) ...
 
-        # Working as a Redirect server
         if (msg.Method == "INVITE"):                      
-            KSR.info("INVITE R-URI: " + KSR.pv.get("$ru") + "\n")
-            KSR.info("        From: " + KSR.pv.get("$fu") +
-                              " To: " + KSR.pv.get("$tu") +"\n")
+            KSR.info("INVITE recebido. From: " + KSR.pv.get("$fu") + " To: " + KSR.pv.get("$tu") + "\n")
             
-            # A special destination with the objective of failing...
-            if (KSR.pv.get("$tu") == "sip:nobody@sipnet.a"):       # To-URI for failing
-                KSR.pv.sets("$ru", "sip:nobody@sipnet.alice:9999") # R-URI replacement to a new destination
-                
-                # Definition of on_failure for INVITE
-                KSR.tm.t_relay()   # Forwarding using transaction mode
-                return 1                
-
-            if (KSR.pv.get("$td") != "sipnet.a"):       # Check if To domain is sipnet.a
-#                KSR.forward()       # Forwarding to a different network using statless mode
-                KSR.tm.t_relay()   # Forwarding using transaction mode
-                KSR.rr.record_route()  # Add Record-Route header
+            # Verificar se o destinatário está registado
+            if KSR.registrar.lookup("location") != 1:
+                KSR.sl.send_reply(404, "User Not Found")
                 return 1
 
-            if (KSR.pv.get("$td") == "sipnet.a"):             # Check if To domain is sipnet.a (unnecessary duplicate)
-                if (KSR.registrar.lookup("location") == 1):   # Check if registered
-#                    KSR.info("  lookup changed R-URI to : " + KSR.pv.get("$ru") +"\n")
-#                    KSR.forward()       # Forwarding to UA contact using statless mode
-                    KSR.tm.t_relay()   # Forwarding using transaction mode
-                    KSR.rr.record_route()  # Add Record-Route header
-                    return 1
-                else:
-                    KSR.sl.send_reply(404, "Not found")
-                    return 1
+            # --- LÓGICA REDIAL 2.0 (Ponto 1 e 2) ---
+            caller_aor = KSR.pv.get("$fu") 
+            callee_aor = KSR.pv.get("$tu") 
+
+            # 1. Obter a lista da Base de Dados
+            # Isto agora funciona mesmo se for outro processo a tratar o INVITE
+            user_targets = db_get_list(caller_aor)
+            
+            is_redial_target = False
+            # Verifica se o destino está na lista recuperada da BD
+            if callee_aor in user_targets:
+                is_redial_target = True
+
+            if is_redial_target:
+                KSR.info(f"[REDIAL] Alvo detetado na BD. A monitorizar {caller_aor} -> {callee_aor}\n")
+                KSR.pv.sets("$avp(retries_left)", str(MAX_REDIALS))
+                KSR.tm.t_on_failure("ksr_failure_redial")
+            else:
+                KSR.info(f"[REDIAL] Chamada normal. Lista do utilizador: {user_targets}\n")
+
+            KSR.rr.record_route()
+            KSR.tm.t_relay()
+            return 1
+
+
 
         if (msg.Method == "ACK"):
-            KSR.info("ACK R-URI: " + KSR.pv.get("$ru") + "\n")
-            KSR.rr.loose_route()  # In case there are Record-Route headers
-            KSR.registrar.lookup("location")
+            KSR.rr.loose_route()
             KSR.tm.t_relay()
             return 1
 
         if (msg.Method == "BYE"):
-            KSR.info("BYE R-URI: " + KSR.pv.get("$ru") + "\n")
-            KSR.rr.loose_route()    # In case there are Record-Route headers
-            KSR.registrar.lookup("location")
+            KSR.rr.loose_route()
             KSR.tm.t_relay()
             return 1
 
         if (msg.Method == "CANCEL"):
-            KSR.info("CANCEL R-URI: " + KSR.pv.get("$ru") + "\n")
-            KSR.rr.loose_route()    # In case there are Record-Route headers
-            KSR.registrar.lookup("location")
+            KSR.rr.loose_route()
             KSR.tm.t_relay()
             return 1
+        
+        if msg.Method == "MESSAGE":
+            ruri = KSR.pv.get("$ru")
+            if "sip:redial@" not in ruri:
+                KSR.info(f"MESSAGE rejeitado (destino desconhecido): {ruri}\n")
+                KSR.sl.send_reply(404, "Não foi encontrado - Use sip:redial@acme.operador")
+                return 1
+            
+            sender_aor = KSR.pv.get("$fu")
+            body = KSR.pv.get("$rb")
+            if not body:
+                KSR.sl.send_reply(400, "Corpo Vazio")
+                return 1
+            KSR.info(f"REDIAL MSG de {sender_aor}: {body}\n")
+            parts = body.strip().split()
+            command = parts[0].upper()
+            if command == "ACTIVATE":
+                if len(parts) < 2:
+                    KSR.sl.send_reply(400, "Mau Pedido")
+                    return 1
+                targets = parts[1:]
+                clean_targets = []
+                for t in targets:
+                    if "sip:" not in t:
+                       t = f"sip:{t}@{KSR.pv.get('$td')}"
+                    clean_targets.append(t)
+                
+                db_save_list(sender_aor, clean_targets)
+                
+                KSR.info(f"REDIAL ATIVO (BD) para {sender_aor}. Lista: {clean_targets}\n")
+                KSR.sl.send_reply(200, f"OK - Service Activated")
+                return 1
 
-        # If this part is reached then Method is not allowed
-        KSR.sl.send_reply(403, "Forbiden method")
+            elif command == "DEACTIVATE":
+                # [ALTERAÇÃO AQUI] Limpar na BD
+                db_clear_list(sender_aor)
+                
+                KSR.info(f"REDIAL DESATIVADO (BD) para {sender_aor}\n")
+                KSR.sl.send_reply(200, "OK - Service Deactivated")
+                return 1
+            else:
+                KSR.sl.send_reply(400, "Comando desconhecido")
+                return 1
+
+            
         return 1
 
     # Function called for REPLY messages received
@@ -117,4 +197,56 @@ class kamailio:
     def ksr_onsend_route(self, msg):
         KSR.info("===== onsend route - from kamailio python script:")
         KSR.info("   %s\n" %(msg.Type))
+        return 1
+    
+    # ==========================================================
+    #  FAILURE ROUTE - Lógica de Remarcação Automática
+    # ==========================================================
+    def ksr_failure_redial(self, msg):
+        KSR.info("[REDIAL-FAIL] Failure route acionada.\n")
+
+        # Verifica códigos: 486 (Busy), 408 (Timeout), 480 (Temp. Unavailable)
+        if KSR.tm.t_check_status("486|408|480"):
+            
+            # Ler tentativas restantes da variável
+            retries_val = KSR.pv.get("$avp(retries_left)")
+            
+            # Converter para int de forma segura
+            if retries_val is not None:
+                retries = int(retries_val)
+            else:
+                retries = 0
+            
+            if retries > 0:
+                KSR.info(f"[REDIAL-LOGIC] Falha. Tentativas: {retries}. A remarcar...\n")
+                
+                # 1. Decrementar contador
+                next_retries = str(retries - 1)
+                KSR.pv.sets("$avp(retries_left)", next_retries)
+                
+                # 2. Re-armar a failure route para a próxima tentativa
+                # (Se esta nova tentativa falhar, queremos voltar aqui)
+                KSR.tm.t_on_failure("ksr_failure_redial")
+                
+                # --- A MAGIA (Workaround sem corex) ---
+                
+                # 3. Restaurar o R-URI para o destino original ($tu - To URI)
+                # Isto "limpa" o estado de erro e define para onde queremos ligar de novo
+                original_dst = KSR.pv.get("$tu")
+                KSR.pv.sets("$ru", original_dst)
+                
+                # 4. Voltar a descobrir a localização (IP/Porta) do utilizador
+                # Como estamos a "recomeçar", precisamos de saber onde ele está registado
+                KSR.registrar.lookup("location")
+                
+                # 5. Enviar novamente
+                # Agora o t_relay já não se queixa de "no branches" porque
+                # alterámos o R-URI e fizemos lookup, criando um novo destino válido.
+                KSR.tm.t_relay()
+                
+                return 1
+            else:
+                KSR.info("[REDIAL-LOGIC] Limite de tentativas atingido. A desistir.\n")
+                return 1
+        
         return 1

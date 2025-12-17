@@ -5,9 +5,9 @@ services:
     networks:
       acme:
         aliases:
-          - acme.operator
+          - acme.operador
     environment:
-      - SIP_DOMAIN=sipnet.kamailio
+      - SIP_DOMAIN=acme.operador
       - WITH_DB=no
     volumes:
       - ./scripts_aux/app.cfg:/etc/kamailio/kamailio.cfg:ro
