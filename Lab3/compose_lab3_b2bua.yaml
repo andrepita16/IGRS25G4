@@ -3,14 +3,9 @@ services:
     image: ghcr.io/kamailio/kamailio:6.0.3-focal
     container_name: kamailio
     networks:
-      sipnet:
-        aliases:        
-          - sipnet.kamailio  # DNS name and a server for both:
-          - sipnet.a    #  sipnet.a, and 
-          - sipnet.b    #  sipnet.b
-      acme.operator:
+      acme:
         aliases:
-          -acme.operator
+          - acme.operator
     environment:
       - SIP_DOMAIN=sipnet.kamailio
       - WITH_DB=no
@@ -23,9 +18,8 @@ services:
     image: twinkle:igrs_01
     container_name: twinkle_alice
     networks:
-      - sipnet
-      - acme.operator
-    hostname: acme.operator.alice
+      - acme
+    hostname: acme.alice
     environment:
       - DISPLAY=host.docker.internal:0
     entrypoint: ["sh", "/root/start.sh"]
@@ -41,9 +35,8 @@ services:
     image: twinkle:igrs_01
     container_name: twinkle_bob
     networks:
-      - sipnet
-      - acme.operator
-    hostname: acme.operator.bob
+      - acme
+    hostname: acme.bob
     environment:
       - DISPLAY=host.docker.internal:0
     entrypoint: ["sh", "/root/start.sh"]
@@ -56,9 +49,7 @@ services:
     restart: unless-stopped
 
 networks:
-  sipnet:
-    driver: bridge
-  acme.operator:
+  acme:
     driver: bridge  
 
 volumes:

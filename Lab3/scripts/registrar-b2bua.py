@@ -27,6 +27,7 @@ class kamailio:
 
             # Segurança: só aceitamos domínio ACME
             if domain != "acme.operator":
+                KSR.info(f"dominio invalido {domain}\n")
                 KSR.sl.send_reply(403, "Forbidden - dominio invalido")
                 return 1
 
