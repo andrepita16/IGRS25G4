@@ -1,5 +1,5 @@
 import sys
-import KSR as KSR
+import KSR as KSR # type: ignore
 
 # Mandatory function - module initiation
 def mod_init():
@@ -19,18 +19,36 @@ class kamailio:
     # Function called for REQUEST messages received 
     def ksr_request_route(self, msg):
         # Working as a Registrar server
-        if  (msg.Method == "REGISTER"):
-            domain = KSR.pv.get("$td")
-            if domain == "@acme.operator":
-                
-                KSR.info("REGISTER R-URI: " + KSR.pv.get("$ru") + "\n")      # Obtaining values via Pseudo-variables (pv)
-                KSR.info("            To: " + KSR.pv.get("$tu") +
-                           " Contact: " + KSR.hdr.get("Contact") +"\n")  # Obtaining values via message header fields
-                KSR.registrar.save('location', 0)                            # Calling Kamailio "registrar" module
+        # REGISTER / DEREGISTER
+        if msg.Method == "REGISTER":
+            domain = KSR.pv.get("$td")      # domínio do To
+            aor = KSR.pv.get("$tu")         # AoR completo
+            expires = KSR.pv.get("$expires")  # expires normalizado
+
+            # Segurança: só aceitamos domínio ACME
+            if domain != "acme.operator":
+                KSR.sl.send_reply(403, "Forbidden - dominio invalido")
                 return 1
-            else:
-                KSR.sl.send_reply(403, domain)
+
+            # DEREGISTER (Expires = 0)
+            if expires == 0:
+                # verifica se existe registo
+                if KSR.registrar.lookup("location") < 0:
+                    KSR.info(f"DEREGISTER FAILED (not registered): {aor}\n")
+                    KSR.sl.send_reply(404, "Not Found")
+                    return 1
+
+                # se existe remove registo
+                KSR.info(f"DEREGISTER OK: {aor}\n")
+                KSR.registrar.save("location", 0)
+
                 return 1
+
+            # REGISTER normal
+            KSR.info(f"REGISTER OK: {aor}\n")
+            KSR.registrar.save("location", 0)
+
+            return 1
 
         # Working as a Redirect server
         if (msg.Method == "INVITE"):                      

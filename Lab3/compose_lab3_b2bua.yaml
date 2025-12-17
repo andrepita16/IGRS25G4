@@ -8,6 +8,9 @@ services:
           - sipnet.kamailio  # DNS name and a server for both:
           - sipnet.a    #  sipnet.a, and 
           - sipnet.b    #  sipnet.b
+      acme.operator:
+        aliases:
+          -acme.operator
     environment:
       - SIP_DOMAIN=sipnet.kamailio
       - WITH_DB=no
@@ -21,7 +24,8 @@ services:
     container_name: twinkle_alice
     networks:
       - sipnet
-    hostname: sipnet.alice
+      - acme.operator
+    hostname: acme.operator.alice
     environment:
       - DISPLAY=host.docker.internal:0
     entrypoint: ["sh", "/root/start.sh"]
@@ -38,7 +42,8 @@ services:
     container_name: twinkle_bob
     networks:
       - sipnet
-    hostname: sipnet.bob
+      - acme.operator
+    hostname: acme.operator.bob
     environment:
       - DISPLAY=host.docker.internal:0
     entrypoint: ["sh", "/root/start.sh"]
@@ -53,6 +58,8 @@ services:
 networks:
   sipnet:
     driver: bridge
+  acme.operator:
+    driver: bridge  
 
 volumes:
   twinkle-alice:

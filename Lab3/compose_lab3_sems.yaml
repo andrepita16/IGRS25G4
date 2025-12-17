@@ -44,7 +44,7 @@ services:
     networks:
       - sipnet
       - acme.operator
-    hostname: sipnet.bob
+    hostname: acme.operator.bob
     environment:
       - DISPLAY=host.docker.internal:0
     entrypoint: ["sh", "/root/start.sh"]
