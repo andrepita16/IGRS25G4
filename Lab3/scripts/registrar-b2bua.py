@@ -2,7 +2,6 @@ import sys
 import KSR as KSR # type: ignore
 
 import sqlite3
-import os
 
 # Caminho para a BD (garante que a pasta tem permissoes de escrita)
 DB_PATH = "/tmp/redial_service.db"
@@ -37,7 +36,7 @@ def db_clear_list(user):
 
 # Inicializa a BD no arranque
 db_init()
-MAX_REDIALS = 5
+MAX_REDIALS = 3
 # Mandatory function - module initiation
 def mod_init():
     KSR.info("===== from Python mod init\n")
